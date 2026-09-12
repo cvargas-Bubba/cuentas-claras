@@ -19,11 +19,28 @@ con metas concretas. Funciona en el celular y en el computador, y se puede insta
   columnas y de movimientos duplicados.
 - **Exportar a Excel** y **respaldo completo** en un archivo `.json` que se puede restaurar.
 
-## Privacidad
+## Cuenta y privacidad
 
-Los datos se guardan **solo en el navegador del dispositivo** (`localStorage`). No se envían
-a ningún servidor y este repositorio no contiene datos personales. Por eso conviene descargar
-un respaldo de vez en cuando desde **Ajustes → Descargar respaldo**.
+Cada persona **crea su cuenta con correo y contraseña** (Firebase Authentication) y sus datos
+se guardan en **Cloud Firestore**, en `usuarios/{uid}/…`. Las reglas de seguridad permiten que
+cada usuario lea y escriba **solo sus propios datos**. Al ingresar desde otro dispositivo, los
+datos aparecen tal cual. Sin conexión la app sigue funcionando y sincroniza al volver internet.
+
+La configuración de Firebase que aparece en `index.html` no es secreta: identifica al proyecto,
+y el acceso a los datos lo controlan las reglas. Este repositorio no contiene datos personales.
+
+Reglas de Firestore publicadas:
+
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /usuarios/{uid}/{documento=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
+```
 
 ## Instalar en el celular
 

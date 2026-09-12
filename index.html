@@ -135,6 +135,18 @@ h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mute
 .suggest{background:var(--save-soft);border:1px solid color-mix(in srgb,var(--save) 35%,transparent);border-radius:12px;padding:14px;display:grid;gap:10px;margin-bottom:16px}
 .suggest p{margin:0}
 
+/* ---------- cuenta de usuario ---------- */
+body.sin-sesion .aside,body.sin-sesion .fab,body.sin-sesion .bottom-nav,body.sin-sesion .top .tabs,body.sin-sesion .month,body.sin-sesion .sync{display:none!important}
+body.sin-sesion .shell{grid-template-columns:minmax(0,1fr);padding-bottom:40px}
+.login{min-height:calc(100vh - 120px);display:grid;place-items:center}
+.login-card{width:min(420px,100%);padding:24px}
+.login-card .brand{font-size:24px}
+.seg.seg2{grid-template-columns:1fr 1fr;margin-top:4px}
+.seg button[aria-pressed="true"][data-auth]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.auth-error,.auth-info{border-radius:8px;padding:9px 11px;margin:14px 0 0;font-size:14px}
+.auth-error{color:var(--danger);background:var(--danger-soft)}
+.auth-info{color:var(--accent);background:var(--accent-soft)}
+
 /* ---------- avisos y cifras ---------- */
 .notice{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 35%,transparent);border-radius:12px;padding:12px 14px;font-size:14px}
 .notice.info{background:var(--in-soft);border-color:color-mix(in srgb,var(--in) 35%,transparent)}
@@ -358,6 +370,18 @@ function siguienteToast() {
   setTimeout(siguienteToast, 3000);
 }
 
+/* ============ Firebase: cuentas de usuario y datos en la nube ============ */
+/* La configuración web de Firebase no es secreta: el acceso lo protegen las reglas de Firestore. */
+const FIREBASE = {
+  apiKey: "AIzaSyBmNNVCkSAgonAtAv8RBxhuF38JcBJ0cGs",
+  authDomain: "cuentas-claras-a1f9a.firebaseapp.com",
+  projectId: "cuentas-claras-a1f9a",
+  storageBucket: "cuentas-claras-a1f9a.firebasestorage.app",
+  messagingSenderId: "604428994909",
+  appId: "1:604428994909:web:1734270af08b77de1b80b4"
+};
+const FB_VER = "12.19.0";
+
 /* ============ configuración base ============ */
 const G = nombre => ({ nombre, tipo: "gasto", presupuesto: 0 });
 const I = nombre => ({ nombre, tipo: "ingreso", presupuesto: 0 });
@@ -398,7 +422,8 @@ const S = {
   cargado: false, modo: "cargando", db: null, dl: null, pend: 0, okM: false, okA: false, ver: 0,
   demoOculto: lsGet("cc.demoOculto") === "1",
   filtro: { q: "", tipo: "todos", cat: "" },
-  form: null, sug: null, imp: null, metaForm: null, restaurar: null, instalar: null, logrosPrev: null
+  form: null, sug: null, imp: null, metaForm: null, restaurar: null, instalar: null, logrosPrev: null,
+  fb: null, fbError: false, user: null, authListo: false, unsub: [], auth: { modo: "ingresar", email: "", nombre: "" }
 };
 
 function normalizarAjustes(a) {
@@ -493,13 +518,16 @@ function msgError(e) {
   return "No se pudo guardar. Revisa tu conexión e intenta de nuevo.";
 }
 async function init() {
+  if (FIREBASE && !window.claude) document.body.classList.add("sin-sesion");
   renderForm(); renderView();
   let db = null;
   if (window.claude && typeof window.claude.use === "function") {
     window.claude.use("downloads").then(d => { S.dl = d; }).catch(() => {});
     try { db = await window.claude.use("db"); } catch (e) { db = null; }
   }
-  if (db) { S.db = db; S.modo = "nube"; conectarNube(); }
+  if (db) { S.db = db; S.modo = "nube"; conectarNube(); return; }
+  if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+  if (FIREBASE) { S.modo = "firebase"; iniciarFirebase(); }
   else { S.modo = "local"; cargarLocal(); }
 }
 function conectarNube() {
@@ -518,13 +546,182 @@ function trasCarga(cambioAjustes) {
   if (!S.okM || !S.okA) return;
   const primera = !S.cargado;
   S.cargado = true;
-  if (!S.pend) setSync("nube", "Sincronizado");
+  if (S.modo === "nube" && !S.pend) setSync("nube", "Sincronizado");
   if (primera || cambioAjustes) renderForm();
   renderView();
 }
 function errorNube() {
   setSync("local", "Sin conexión");
   toast("Se perdió la conexión con tus datos. Recarga la página.");
+}
+
+/* --- modo Firebase: cada usuario guarda en usuarios/{uid}/meses/{AAAA-MM} y usuarios/{uid}/config/ajustes --- */
+async function iniciarFirebase() {
+  setSync("guardando", "Conectando…");
+  try {
+    const base = `https://www.gstatic.com/firebasejs/${FB_VER}/`;
+    const [appM, authM, fsM] = await Promise.all(["firebase-app", "firebase-auth", "firebase-firestore"].map(m => import(base + m + ".js")));
+    const app = appM.initializeApp(FIREBASE);
+    const db = fsM.initializeFirestore(app, { ignoreUndefinedProperties: true, localCache: fsM.persistentLocalCache({ tabManager: fsM.persistentMultipleTabManager() }) });
+    const auth = authM.getAuth(app);
+    auth.languageCode = "es";
+    S.fb = { authM, fsM, auth, db };
+    authM.onAuthStateChanged(auth, u => { S.authListo = true; if (u) entrar(u); else salir(); });
+  } catch (e) {
+    S.fbError = true; S.authListo = true;
+    setSync("local", "Sin conexión");
+    renderView();
+  }
+}
+function entrar(u) {
+  S.unsub.forEach(f => f());
+  S.user = { uid: u.uid, email: u.email || "", nombre: u.displayName || S.auth.nombre || "" };
+  Object.assign(S, { meses: {}, ajustes: normalizarAjustes(AJUSTES_BASE), okM: false, okA: false, cargado: false, logrosPrev: null, sug: null, imp: null, metaForm: null, restaurar: null });
+  S.form = formNuevo(); S.ver++;
+  document.body.classList.remove("sin-sesion");
+  renderForm(); renderView();
+  const { doc, collection, onSnapshot } = S.fb.fsM;
+  S.unsub = [
+    onSnapshot(collection(S.fb.db, "usuarios", u.uid, "meses"), { includeMetadataChanges: true }, snap => {
+      estadoSync(snap.metadata);
+      if (S.okM && !snap.docChanges().length) return; // solo cambió el estado de sincronización
+      const m = {};
+      snap.docs.forEach(d => { const x = d.data(); m[d.id] = (x && x.items) || {}; });
+      S.meses = m; S.ver++; S.okM = true; trasCarga(false);
+    }, errorFb),
+    onSnapshot(doc(S.fb.db, "usuarios", u.uid, "config", "ajustes"), snap => {
+      if (snap.exists()) S.ajustes = normalizarAjustes(snap.data());
+      S.okA = true; trasCarga(true);
+    }, errorFb)
+  ];
+}
+function salir() {
+  S.unsub.forEach(f => f());
+  Object.assign(S, { unsub: [], user: null, meses: {}, ajustes: normalizarAjustes(AJUSTES_BASE), cargado: true, okM: false, okA: false, sug: null, imp: null, metaForm: null, restaurar: null });
+  S.form = formNuevo(); S.ver++;
+  document.body.classList.add("sin-sesion");
+  cerrarSheet(); renderView();
+}
+function estadoSync(meta) {
+  if (meta.hasPendingWrites) setSync("guardando", navigator.onLine ? "Guardando…" : "Sin conexión: se guardará al volver");
+  else if (meta.fromCache) setSync(navigator.onLine ? "guardando" : "local", navigator.onLine ? "Conectando…" : "Sin conexión");
+  else setSync("nube", "Guardado en tu cuenta");
+}
+function errorFb(e) {
+  if (!S.user) return;
+  setSync("local", "Error");
+  toast(e && e.code === "permission-denied" ? "No tienes permiso para ver estos datos. Cierra sesión y vuelve a ingresar." : "Se perdió la conexión con tus datos. Recarga la página.");
+}
+const msgErrorFb = e => (e && e.code === "permission-denied" ? "No se pudo guardar: cierra sesión y vuelve a ingresar." : e && e.code === "resource-exhausted" ? "Se alcanzó el límite gratuito del día. Intenta de nuevo mañana." : "No se pudo guardar en tu cuenta. Intenta de nuevo.");
+function escribirFb(cambios) {
+  const { doc, setDoc, deleteField } = S.fb.fsM;
+  for (const mes in cambios) {
+    const parte = {};
+    for (const id in cambios[mes]) parte[id] = cambios[mes][id] || deleteField();
+    // sin await: sin conexión la escritura queda en cola y se sube sola al volver internet
+    setDoc(doc(S.fb.db, "usuarios", S.user.uid, "meses", mes), { mes, items: parte }, { merge: true }).catch(e => toast(msgErrorFb(e)));
+  }
+}
+function guardarAjustesFb() {
+  const { doc, setDoc } = S.fb.fsM;
+  setDoc(doc(S.fb.db, "usuarios", S.user.uid, "config", "ajustes"), JSON.parse(JSON.stringify(S.ajustes))).catch(e => toast(msgErrorFb(e)));
+}
+function restaurarFb(meses, ajustes) {
+  const { doc, writeBatch } = S.fb.fsM, uid = S.user.uid, lote = writeBatch(S.fb.db);
+  for (const mes of new Set([...Object.keys(S.meses), ...Object.keys(meses)])) lote.set(doc(S.fb.db, "usuarios", uid, "meses", mes), { mes, items: meses[mes] || {} });
+  lote.set(doc(S.fb.db, "usuarios", uid, "config", "ajustes"), JSON.parse(JSON.stringify(ajustes)));
+  lote.commit().catch(e => toast(msgErrorFb(e)));
+}
+
+/* --- pantalla de ingreso y registro --- */
+function vLogin() {
+  const a = S.auth;
+  if (S.fbError) return `<div class="login"><section class="panel login-card"><h2>No se pudo conectar</h2><p>Para ingresar a tu cuenta necesitas internet. Revisa tu conexión e intenta de nuevo.</p><button class="btn primary" data-a="recargar">Reintentar</button></section></div>`;
+  const titulo = a.modo === "crear" ? "Crear mi cuenta" : a.modo === "recuperar" ? "Enviar correo para cambiarla" : "Ingresar";
+  return `<div class="login"><section class="panel login-card">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">$</span>Cuentas Claras</div>
+    <p class="muted" style="margin:8px 0 18px">Registra lo que recibes y gastas, y ahorra para tus metas. Todo queda guardado en tu cuenta y solo tú puedes verlo.</p>
+    ${a.modo === "recuperar" ? `<h2>Recuperar contraseña</h2><p class="hint" style="margin:6px 0 0">Te enviaremos un correo con un enlace para crear una contraseña nueva.</p>`
+      : `<div class="seg seg2" role="group" aria-label="Ingresar o crear cuenta"><button type="button" data-auth="ingresar" aria-pressed="${a.modo === "ingresar"}">Ingresar</button><button type="button" data-auth="crear" aria-pressed="${a.modo === "crear"}">Crear cuenta</button></div>`}
+    <form id="frmAuth" novalidate>
+      ${a.modo === "crear" ? `<div class="field"><label for="aNombre">Tu nombre</label><input id="aNombre" class="input" autocomplete="given-name" maxlength="40" value="${esc(a.nombre)}"></div>` : ""}
+      <div class="field"><label for="aEmail">Correo</label><input id="aEmail" class="input" type="email" autocomplete="email" inputmode="email" autocapitalize="off" value="${esc(a.email)}"></div>
+      ${a.modo !== "recuperar" ? `<div class="field"><label for="aPass">Contraseña</label><input id="aPass" class="input" type="password" autocomplete="${a.modo === "crear" ? "new-password" : "current-password"}">${a.modo === "crear" ? `<span class="hint">Mínimo 6 caracteres.</span>` : ""}</div>` : ""}
+      <p id="authMsg" hidden></p>
+      <div class="actions">
+        <button class="btn primary block" type="submit">${titulo}</button>
+        ${a.modo === "ingresar" ? `<button type="button" class="btn block" data-auth="recuperar">Olvidé mi contraseña</button>` : a.modo === "recuperar" ? `<button type="button" class="btn block" data-auth="ingresar">Volver</button>` : ""}
+      </div>
+    </form>
+  </section></div>`;
+}
+function msgAuth(error, info) {
+  const el = $("#authMsg");
+  if (!el) return;
+  el.className = error ? "auth-error" : "auth-info";
+  el.setAttribute("role", error ? "alert" : "status");
+  el.textContent = error || info || "";
+  el.hidden = !(error || info);
+}
+function errorAuth(e) {
+  const c = (e && e.code) || "";
+  if (c === "auth/invalid-email") return "Ese correo no es válido.";
+  if (/auth\/(invalid-credential|invalid-login-credentials|wrong-password|user-not-found)/.test(c)) return "Correo o contraseña incorrectos.";
+  if (c === "auth/email-already-in-use") return "Ya existe una cuenta con ese correo. Ingresa o recupera tu contraseña.";
+  if (c === "auth/weak-password") return "La contraseña debe tener al menos 6 caracteres.";
+  if (c === "auth/too-many-requests") return "Demasiados intentos. Espera unos minutos e intenta de nuevo.";
+  if (c === "auth/network-request-failed") return "Sin conexión a internet. Revisa tu conexión.";
+  if (c === "auth/operation-not-allowed") return "El registro con correo no está activado todavía.";
+  return "No se pudo completar. Intenta de nuevo.";
+}
+async function enviarAuth() {
+  const a = S.auth, btn = $("#frmAuth button[type=submit]"), texto = btn.textContent;
+  a.email = $("#aEmail").value.trim();
+  if ($("#aNombre")) a.nombre = $("#aNombre").value.trim();
+  const pass = $("#aPass") ? $("#aPass").value : "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a.email)) { msgAuth("Escribe un correo válido."); $("#aEmail").focus(); return; }
+  if (a.modo !== "recuperar" && pass.length < 6) { msgAuth("La contraseña debe tener al menos 6 caracteres."); $("#aPass").focus(); return; }
+  if (!S.fb) { msgAuth("No hay conexión con el servicio de cuentas. Recarga la página."); return; }
+  const { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendPasswordResetEmail } = S.fb.authM;
+  btn.disabled = true; btn.textContent = "Un momento…"; msgAuth("");
+  try {
+    if (a.modo === "recuperar") {
+      await sendPasswordResetEmail(S.fb.auth, a.email);
+      msgAuth("", `Si hay una cuenta con ${a.email}, te llegará un correo para crear una contraseña nueva. Revisa también la carpeta de spam.`);
+    } else if (a.modo === "crear") {
+      const cred = await createUserWithEmailAndPassword(S.fb.auth, a.email, pass);
+      if (a.nombre) { await updateProfile(cred.user, { displayName: a.nombre }); if (S.user) S.user.nombre = a.nombre; }
+      toast("Tu cuenta quedó creada");
+    } else {
+      await signInWithEmailAndPassword(S.fb.auth, a.email, pass);
+    }
+  } catch (e) { msgAuth(errorAuth(e)); }
+  finally { const b = $("#frmAuth button[type=submit]"); if (b) { b.disabled = false; b.textContent = texto; } }
+}
+function seccionCuenta() {
+  if (S.modo !== "firebase" || !S.user) return "";
+  return `<section class="panel pad"><h2>Tu cuenta</h2>
+    <p style="margin:8px 0 12px">${S.user.nombre ? `<b>${esc(S.user.nombre)}</b> · ` : ""}${esc(S.user.email)}</p>
+    <div class="row"><button class="btn small" data-a="cambiarClave">Cambiar contraseña</button><button class="btn small danger" data-a="cerrarSesion">Cerrar sesión</button></div>
+    <p class="hint" style="margin:10px 0 0">Al ingresar con tu correo desde otro celular o computador, encuentras tus datos tal cual.</p>
+  </section>`;
+}
+
+/* --- datos que quedaron en el dispositivo antes de crear la cuenta --- */
+function datosLocales() {
+  try {
+    const d = JSON.parse(lsGet("cc.datos") || "null");
+    if (!d) return null;
+    const movs = Object.values(d.meses || {}).reduce((s, it) => s + Object.values(it || {}).filter(Boolean).length, 0);
+    const metas = ((d.ajustes && d.ajustes.metas) || []).length;
+    return movs || metas ? { d, movs, metas } : null;
+  } catch (e) { return null; }
+}
+function avisoMigrar() {
+  if (S.modo !== "firebase" || !S.user || real().length || S.ajustes.metas.length || lsGet("cc.migrado")) return "";
+  const loc = datosLocales();
+  if (!loc) return "";
+  return `<div class="notice info"><div><b>Hay datos guardados en este dispositivo</b> (${plural(loc.movs, "movimiento", "movimientos")}, ${plural(loc.metas, "meta", "metas")}) de antes de crear tu cuenta. ¿Los subimos a tu cuenta?</div><span class="spacer"></span><button class="btn small" data-a="migrarNo">No, gracias</button><button class="btn small primary" data-a="migrarSi">Subir a mi cuenta</button></div>`;
 }
 function cargarLocal() {
   try {
@@ -533,16 +730,14 @@ function cargarLocal() {
   } catch (e) {}
   S.cargado = true; S.ver++;
   setSync("dispositivo", "Guardado en este dispositivo");
-  if (!window.claude) {
-    if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
-    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  }
+  if (!window.claude && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   renderForm(); renderView();
 }
 const guardarLocal = () => lsSet("cc.datos", JSON.stringify({ meses: S.meses, ajustes: S.ajustes }));
 
 /* cambios = { "2026-09": { id: movimiento | null } }  (null = eliminar) */
 async function escribir(cambios) {
+  if (S.modo === "firebase") { escribirFb(cambios); return; }
   if (S.modo !== "nube") {
     for (const mes in cambios) {
       const t = (S.meses[mes] = S.meses[mes] || {});
@@ -573,7 +768,8 @@ async function escribirDoc(ref, mes, parte) {
   else await ref.set({ mes, items: Object.fromEntries(Object.entries(parte).filter(([, v]) => v)) });
 }
 async function guardarAjustes() {
-  if (S.modo !== "nube") guardarLocal();
+  if (S.modo === "firebase") guardarAjustesFb();
+  else if (S.modo !== "nube") guardarLocal();
   else {
     setSync("guardando", "Guardando…");
     try { await S.db.doc("ajustes/principal").set(JSON.parse(JSON.stringify(S.ajustes))); setSync("nube", "Sincronizado"); }
@@ -848,6 +1044,7 @@ function renderView() {
   $$('[role="tab"][data-view]').forEach(b => b.setAttribute("aria-selected", b.dataset.view === S.view));
   $("#mLabel").textContent = nombreMes(S.mes);
   $(".month").style.visibility = S.view === "resumen" || S.view === "movimientos" ? "visible" : "hidden";
+  if (S.modo === "firebase" && !S.user) { main.innerHTML = S.authListo ? vLogin() : `<div class="panel empty">Cargando…</div>`; return; }
   if (!S.cargado) { main.innerHTML = `<div class="panel empty">Cargando tus datos…</div>`; return; }
   const caja = $(".preview-box", main), scrollCaja = caja ? caja.scrollTop : 0;
   main.innerHTML = { resumen: vResumen, metas: vMetas, movimientos: vMovimientos, importar: vImportar, ajustes: vAjustes }[S.view]();
@@ -904,7 +1101,7 @@ function vResumen() {
   </section>`;
   const grafico = `<section class="panel pad"><div class="row"><h2>Últimos 6 meses</h2><span class="spacer"></span>${leyenda()}</div><div class="chart-wrap" id="chart"></div></section>`;
   if (!movs.length && !enDemo()) {
-    return `<div class="view">${avisoRespaldo()}${hero}${figs}
+    return `<div class="view">${avisoMigrar()}${avisoRespaldo()}${hero}${figs}
       <div class="panel empty"><p style="margin:0 0 12px">No hay movimientos en ${nombreMes(S.mes).toLowerCase()}.</p>
         <div class="row" style="justify-content:center"><button class="btn primary" data-a="nuevo">Registrar movimiento</button><button class="btn" data-view="importar">Importar Excel</button></div></div>
       ${grafico}</div>`;
@@ -933,7 +1130,7 @@ function vResumen() {
     const max = Math.max(1, ...arr.map(x => x[1]));
     return arr.length ? arr.map(([n, v]) => `<div class="cat"><div class="cat-top"><span class="n">${esc(n)}</span><span class="a num">${fmt(v)}</span></div><div class="bar ${clase}"><i style="width:${((v / max) * 100).toFixed(1)}%"></i></div></div>`).join("") : `<p class="muted">Sin movimientos.</p>`;
   };
-  return `<div class="view">${avisoDemo()}${avisoRespaldo()}${hero}${figs}
+  return `<div class="view">${avisoMigrar()}${avisoDemo()}${avisoRespaldo()}${hero}${figs}
   <div class="grid-2">
     <section class="panel pad">
       <div class="row"><h2>En qué se fue la plata</h2><span class="spacer"></span>${totalP ? `<span class="hint" style="font-size:13px">Presupuesto: <span class="num">${fmt(t.g)}</span> de <span class="num">${fmt(totalP)}</span></span>` : `<button class="btn small" data-view="ajustes">Definir presupuestos</button>`}</div>
@@ -1329,13 +1526,14 @@ function vAjustes() {
         <form class="add" data-addcuenta="1"><input class="input" name="n" placeholder="Ej: MACH, Tenpo, Tarjeta Falabella" maxlength="40" aria-label="Nueva cuenta"><button class="btn">Agregar</button></form>
         <p class="hint" style="margin-bottom:0">Si el nombre contiene “crédito”, el registro ofrece dividir la compra en cuotas.</p>
       </section>
+      ${seccionCuenta()}
       <section class="panel pad"><h2>Tus datos</h2>
-        <p style="margin:8px 0 12px">${plural(n, "movimiento guardado", "movimientos guardados")}. ${S.modo === "nube" ? "Se sincronizan entre tus dispositivos al abrir esta misma página." : "Se guardan solo en este dispositivo, no en internet. Descarga un respaldo de vez en cuando para no perderlos."}</p>
+        <p style="margin:8px 0 12px">${plural(n, "movimiento guardado", "movimientos guardados")}. ${S.modo === "firebase" ? "Se guardan en tu cuenta. El respaldo es una copia extra que puedes guardar donde quieras." : S.modo === "nube" ? "Se sincronizan entre tus dispositivos al abrir esta misma página." : "Se guardan solo en este dispositivo, no en internet. Descarga un respaldo de vez en cuando para no perderlos."}</p>
         <div class="row"><button class="btn small primary" data-a="respaldo">Descargar respaldo</button><button class="btn small" data-a="restaurar">Restaurar respaldo</button></div>
         <p class="hint" style="margin:10px 0 14px">${u ? `Último respaldo: ${fechaCorta(isoDe(new Date(u)))}.` : "Aún no has descargado un respaldo."} El respaldo (.json) incluye movimientos, metas y ajustes.</p>
         <div class="row"><button class="btn small" data-a="exportar">Exportar a Excel</button><button class="btn small" data-a="plantilla">Descargar plantilla</button></div>
       </section>
-      ${S.modo === "local" && !window.claude ? `<section class="panel pad"><h2>Instalar en el celular</h2>
+      ${!window.claude ? `<section class="panel pad"><h2>Instalar en el celular</h2>
         ${instalada ? `<p style="margin:8px 0 0">Ya la estás usando como app instalada.</p>` : `
           <p style="margin:8px 0 0">Instalada se abre como una app, funciona sin internet y el teléfono cuida mejor tus datos.</p>
           ${S.instalar ? `<div class="row" style="margin-top:10px"><button class="btn primary small" data-a="instalar">Instalar Cuentas Claras</button></div>` : ""}
@@ -1426,7 +1624,7 @@ async function leerRespaldo(file) {
   } catch (e) { toast("Ese archivo no es un respaldo de Cuentas Claras."); }
 }
 async function aplicarRespaldo() {
-  const { d, movs } = S.restaurar, meses = {};
+  const { d, movs, migrar } = S.restaurar, meses = {};
   for (const mes in d.meses) {
     if (!/^\d{4}-\d{2}$/.test(mes)) continue;
     const items = {};
@@ -1438,7 +1636,8 @@ async function aplicarRespaldo() {
   }
   const ajustes = normalizarAjustes(d.ajustes);
   try {
-    if (S.modo !== "nube") { S.meses = meses; S.ajustes = ajustes; S.ver++; guardarLocal(); }
+    if (S.modo === "firebase") restaurarFb(meses, ajustes);
+    else if (S.modo !== "nube") { S.meses = meses; S.ajustes = ajustes; S.ver++; guardarLocal(); }
     else {
       setSync("guardando", "Restaurando…");
       for (const mes of new Set([...Object.keys(S.meses), ...Object.keys(meses)])) await S.db.doc("meses/" + mes).set({ mes, items: meses[mes] || {} });
@@ -1446,7 +1645,7 @@ async function aplicarRespaldo() {
       setSync("nube", "Sincronizado");
     }
     S.restaurar = null; S.logrosPrev = null; S.form = formNuevo(); S.sug = null;
-    toast(`Respaldo restaurado: ${plural(movs, "movimiento", "movimientos")}`);
+    toast(migrar ? "Los datos de este dispositivo se subieron a tu cuenta" : `Respaldo restaurado: ${plural(movs, "movimiento", "movimientos")}`);
     renderForm(); renderView();
   } catch (e) { toast(msgError(e)); setSync("nube", "Error al restaurar"); }
 }
@@ -1482,6 +1681,15 @@ const soloDigitos = v => parseInt(String(v).replace(/\D/g, "").slice(0, 12), 10)
 document.addEventListener("click", e => {
   const t = e.target;
   if (!(t instanceof Element)) return;
+  const authBtn = t.closest("[data-auth]");
+  if (authBtn) {
+    const em = $("#aEmail"), nm = $("#aNombre");
+    if (em) S.auth.email = em.value.trim();
+    if (nm) S.auth.nombre = nm.value;
+    S.auth.modo = authBtn.dataset.auth; renderView();
+    const foco = $(S.auth.modo === "crear" ? "#aNombre" : "#aEmail"); if (foco) foco.focus();
+    return;
+  }
   const vista = t.closest("[data-view]");
   if (vista) { if (esMovil()) cerrarSheet(); setView(vista.dataset.view); return; }
   if (t.closest("#mPrev")) { S.mes = mesSuma(S.mes, -1); renderView(); return; }
@@ -1558,6 +1766,19 @@ document.addEventListener("click", e => {
       corregirPrincipal(); S.metaForm = null; toast("Meta eliminada"); guardarAjustes();
       break;
     }
+    case "recargar": location.reload(); break;
+    case "cerrarSesion": if (S.fb) S.fb.authM.signOut(S.fb.auth); break;
+    case "cambiarClave":
+      if (S.fb && S.user) S.fb.authM.sendPasswordResetEmail(S.fb.auth, S.user.email)
+        .then(() => toast(`Te enviamos un correo a ${S.user.email} para cambiar tu contraseña`))
+        .catch(e => toast(errorAuth(e)));
+      break;
+    case "migrarSi": {
+      const loc = datosLocales();
+      if (loc) { S.restaurar = { d: loc.d, movs: loc.movs, metas: loc.metas, migrar: true }; aplicarRespaldo(); lsSet("cc.migrado", "1"); }
+      break;
+    }
+    case "migrarNo": lsSet("cc.migrado", "1"); renderView(); break;
     case "sugOk": aceptarSugerencia(); break;
     case "sugOtro": { const s = S.sug; if (s) abrirAhorro(s.meta, "apartar", s.monto, s.fecha); break; }
     case "sugNo": S.sug = null; renderForm(); if (esMovil()) cerrarSheet(); break;
@@ -1587,6 +1808,7 @@ document.addEventListener("submit", e => {
   e.preventDefault();
   if (f.id === "frm") { enviarForm(); return; }
   if (f.id === "frmMeta") { guardarMeta(); return; }
+  if (f.id === "frmAuth") { enviarAuth(); return; }
   const nombre = ((f.elements.n && f.elements.n.value) || "").trim();
   if (!nombre) return;
   if (f.dataset.addcat) {
